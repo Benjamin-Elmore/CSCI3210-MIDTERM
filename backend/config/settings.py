@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     "rest_framework.authtoken",
     "channels",
     "core",
+    "accounts",
+    "canvas",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
