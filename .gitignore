@@ -1,0 +1,17 @@
+.venv/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+*.sqlite3
+.ruff_cache/
+node_modules/
+dist/
+*.tsbuildinfo
+staticfiles/
+media/
+*.log
+.vscode/
+.idea/
+.DS_Store
