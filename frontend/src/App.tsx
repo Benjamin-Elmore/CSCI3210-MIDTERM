@@ -1,52 +1,87 @@
-import { useEffect, useState } from 'react'
-import { getHealth } from './api/health'
+import { useCallback, useEffect, useState } from 'react'
+import { currentUser, logout, saveToken, storedToken } from './api/accounts'
+import type { Session } from './api/accounts'
+import { ApiError, message } from './api/client'
+import { AuthForm } from './components/AuthForm'
+import { Board } from './components/Board'
 import './App.css'
 
-// Each status exposes only the data relevant to that state.
-type ConnectionState =
-  | { status: 'checking' }
-  | { status: 'connected' }
-  | { status: 'error'; message: string }
-
 export default function App() {
-  const [connection, setConnection] = useState<ConnectionState>({ status: 'checking' })
+  const [token, setToken] = useState(storedToken)
+  const [session, setSession] = useState<Session | null>(null)
+  const [checking, setChecking] = useState(Boolean(token))
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  const [loggingOut, setLoggingOut] = useState(false)
+
+  const expired = useCallback(() => {
+    setChecking(false)
+    saveToken(null)
+    setToken(null)
+    setSession(null)
+    setError('Your session has expired. Please log in again.')
+  }, [])
 
   useEffect(() => {
-    // Cancel requests on unmount, including React StrictMode's development remount.
+    if (!token) return
     const controller = new AbortController()
-    void getHealth(controller.signal)
-      .then(() => {
-        if (!controller.signal.aborted) setConnection({ status: 'connected' })
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setConnection({
-            status: 'error',
-            message: error instanceof Error ? error.message : 'Could not reach the API',
-          })
-        }
-      })
+    void currentUser(token, controller.signal).then(user => {
+      if (!controller.signal.aborted) setSession({ user, token })
+    }).catch(error => {
+      if (controller.signal.aborted) return
+      if (error instanceof ApiError && error.status === 401) expired()
+      else setError(message(error))
+    }).finally(() => {
+      if (!controller.signal.aborted) setChecking(false)
+    })
     return () => controller.abort()
-  }, [])
+  }, [token, retry, expired])
+
+  function signedIn(value: Session) {
+    setChecking(true)
+    saveToken(value.token)
+    setError('')
+    setSession(value)
+    setToken(value.token)
+  }
+
+  async function signOut() {
+    if (!session || loggingOut) return
+    setLoggingOut(true)
+    setError('')
+    try {
+      await logout(session.token)
+      setChecking(false)
+      saveToken(null)
+      setToken(null)
+      setSession(null)
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) expired()
+      else setError(`Could not log out. ${message(error)}`)
+    } finally {
+      setLoggingOut(false)
+    }
+  }
 
   return (
     <main className="shell">
-      <p className="eyebrow">CSCI 3210 / Shared pixel canvas</p>
-      <h1>
-        A little color.<br />
-        A shared canvas.
-      </h1>
-      <p className="intro">A place to build something together, one pixel at a time.</p>
-      <section aria-labelledby="status-heading" className="status-card">
-        <h2 id="status-heading">Project foundation</h2>
-        <p role="status" aria-live="polite">
-          {connection.status === 'checking' && 'Connecting to the API...'}
-          {connection.status === 'connected' && 'API connected. Ready for the next step.'}
-          {connection.status === 'error' &&
-            `API unavailable: ${connection.message}. Start the backend and reload.`}
-        </p>
-        <p className="muted">Accounts, pixel placement, and live updates are coming next.</p>
-      </section>
+      <header className="site-header">
+        <a className="brand" href="/" aria-label="Pixel Commons home"><span className="brand-mark" aria-hidden="true">▦</span> Pixel Commons</a>
+        {session && <div className="account-menu"><span>{session.user.username}</span><button disabled={loggingOut} onClick={() => { void signOut() }}>{loggingOut ? 'Logging out…' : 'Log out'}</button></div>}
+      </header>
+      {error && <p className="error" role="alert">{error}</p>}
+      {checking ? <p role="status">Restoring your session…</p> : session ?
+        <Board key={session.token} token={session.token} onExpired={expired} /> : token ?
+          <section className="card"><h1>Let’s reconnect.</h1><p>We could not restore your session.</p><button onClick={() => { setChecking(true); setError(''); setRetry(value => value + 1) }}>Try again</button></section> :
+          <div className="welcome-layout">
+            <section className="welcome"><p className="eyebrow">A small contribution. A collective creation.</p>
+              <h1>A little color.<br />A shared canvas.</h1>
+              <p className="intro">Choose a color, find your spot, and add a pixel. Build something together, one mark at a time.</p>
+              <div className="pixel-art" aria-hidden="true">{Array.from({ length: 64 }, (_, index) => <span key={index} />)}</div>
+              <p className="muted">100 × 100 possibilities. What will you add?</p>
+            </section>
+            <AuthForm onSession={signedIn} />
+          </div>}
     </main>
   )
 }

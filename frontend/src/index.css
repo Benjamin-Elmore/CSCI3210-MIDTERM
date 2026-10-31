@@ -8,7 +8,6 @@
   -webkit-font-smoothing: antialiased;
 }
 
-/* Include borders and padding in each element's declared width. */
 * {
   box-sizing: border-box;
 }
@@ -16,4 +15,13 @@
 body {
   margin: 0;
   min-width: 320px;
+}
+
+button, input {
+  font: inherit;
+}
+
+button:focus-visible, a:focus-visible, input:focus-visible, canvas:focus-visible {
+  outline: 3px solid #c77721;
+  outline-offset: 4px;
 }
