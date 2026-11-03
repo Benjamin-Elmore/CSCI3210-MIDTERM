@@ -27,6 +27,8 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
   const [view, setView] = useState(overview)
+  const [linkOpened, setLinkOpened] = useState(false)
+  const [shareFallback, setShareFallback] = useState('')
   const [jumpError, setJumpError] = useState('')
   const [eyedropper, setEyedropper] = useState(false)
   const [color, setColor] = useState('')
@@ -83,6 +85,30 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     setReadyAt(Date.now() + remaining)
     setNow(Date.now())
   }, [nextAllowedAt, serverTime, snapshotVersion])
+
+  if (snapshot && !linkOpened) {
+    setLinkOpened(true)
+    const query = new URLSearchParams(window.location.search)
+    const coordinate = coordinateFrom(query.get('x') ?? '', query.get('y') ?? '', snapshot)
+    if (coordinate) {
+      setSelected(coordinate)
+      setView(centeredView(coordinate, snapshot, view.zoom))
+    }
+  }
+
+  async function sharePixel() {
+    const url = new URL(window.location.pathname, window.location.origin)
+    url.searchParams.set('x', String(selected.x))
+    url.searchParams.set('y', String(selected.y))
+    try {
+      await navigator.clipboard.writeText(url.href)
+      setShareFallback('')
+      setNotice('Pixel link copied.')
+    } catch {
+      setShareFallback(url.href)
+      setNotice('Copy the pixel link from the field below.')
+    }
+  }
 
   function exportPng() {
     const canvas = canvasRef.current
@@ -195,7 +221,11 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <button disabled={view.zoom === 1} onClick={() => setView(overview)}>Reset view</button>
             <span aria-live="polite">{view.zoom}×</span>
             <button onClick={exportPng}>Export PNG</button>
+            <button onClick={() => { void sharePixel() }}>Copy pixel link</button>
           </div>
+          {shareFallback && <label>Pixel link
+            <input readOnly value={shareFallback} onFocus={event => event.currentTarget.select()} />
+          </label>}
           <form className="coordinate-jump" onSubmit={jump}>
             <label>X <input name="x" inputMode="numeric" defaultValue="0" required /></label>
             <label>Y <input name="y" inputMode="numeric" defaultValue="0" required /></label>
