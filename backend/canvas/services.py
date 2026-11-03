@@ -6,6 +6,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import APIException, Throttled, ValidationError
 
+from .events import broadcast_placement
 from .models import Canvas, Pixel, Placement, UserCanvasState
 
 
@@ -56,5 +57,5 @@ def place_pixel(*, user, canvas_id, x, y, color, request_id):
     )
     state.next_allowed_at = now + timedelta(seconds=canvas.cooldown_seconds)
     state.save(update_fields=["next_allowed_at"])
-    # Broadcasting and cache invalidation will be added with live synchronization.
+    transaction.on_commit(lambda: broadcast_placement(placement), robust=True)
     return placement, True
