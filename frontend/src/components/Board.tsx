@@ -1,95 +1,48 @@
 import { useEffect, useRef, useState } from 'react'
-import { getHistory, getSnapshot, listCanvases, placePixel } from '../api/canvas'
-import type { Placement, PlacementInput, Snapshot } from '../api/canvas'
-import { decodeCanvasEvent, subscribeToCanvas } from '../api/canvasSocket'
+import { placePixel } from '../api/canvas'
+import type { PlacementInput } from '../api/canvas'
+import { useLiveCanvas } from '../hooks/useLiveCanvas'
 import { ApiError, message } from '../api/client'
 import { PixelCanvas } from './PixelCanvas'
 import type { Coordinate } from './PixelCanvas'
 
-function applyPlacement(board: Snapshot | null, placement: Placement): Snapshot | null {
-  if (!board || placement.version !== board.version + 1) return board
-  const pixels = board.pixels.filter(pixel => pixel.x !== placement.x || pixel.y !== placement.y)
-  return { ...board, version: placement.version, pixels: [...pixels, placement] }
-}
-
-function addPlacement(history: Placement[], placement: Placement) {
-  if (history.some(item => item.id === placement.id)) return history
-  return [...history, placement].sort((a, b) => b.version - a.version).slice(0, 50)
-}
-
 export function Board({ token, onExpired }: { token: string; onExpired: () => void }) {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
-  const [history, setHistory] = useState<Placement[]>([])
+  const { board, connection, error: syncError, loading, refresh, receive } = useLiveCanvas(token, onExpired)
+  const snapshot = board?.snapshot
+  const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
   const [color, setColor] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [loading, setLoading] = useState(true)
   const [placing, setPlacing] = useState(false)
-  const [reload, setReload] = useState(0)
   const [readyAt, setReadyAt] = useState(0)
   const [now, setNow] = useState(() => Date.now())
   const [pending, setPending] = useState<PlacementInput | null>(null)
   const placingRef = useRef(false)
+  const latestLocalVersion = useRef(0)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 250)
     return () => window.clearInterval(timer)
   }, [])
 
+  const palette = snapshot?.palette
+  const backgroundColor = snapshot?.background_color
   useEffect(() => {
-    const controller = new AbortController()
-    async function load() {
-      setLoading(true)
-      setError('')
-      try {
-        const canvases = await listCanvases(token, controller.signal)
-        const canvas = canvases.find(item => item.slug === 'main') ?? canvases[0]
-        if (!canvas) throw new Error('No canvas is available yet. Please try again later.')
-        const [board, placements] = await Promise.all([
-          getSnapshot(canvas.id, token, controller.signal),
-          getHistory(canvas.id, token, controller.signal),
-        ])
-        if (controller.signal.aborted) return
-        setSnapshot(board)
-        setHistory(placements)
-        setColor(current => board.palette.includes(current) ? current :
-          board.palette.find(item => item !== board.background_color) ?? board.palette[0] ?? '#000000')
-        // Use the server's time difference rather than relying on the client's clock.
-        const remaining = board.next_allowed_at
-          ? Math.max(0, Date.parse(board.next_allowed_at) - Date.parse(board.server_time)) : 0
-        setReadyAt(Date.now() + remaining)
-        setNow(Date.now())
-      } catch (error) {
-        if (controller.signal.aborted) return
-        if (error instanceof ApiError && error.status === 401) onExpired()
-        else setError(message(error))
-      } finally {
-        if (!controller.signal.aborted) setLoading(false)
-      }
-    }
-    void load()
-    return () => controller.abort()
-  }, [token, reload, onExpired])
+    if (!palette) return
+    setColor(current => palette.includes(current) ? current :
+      palette.find(item => item !== backgroundColor) ?? palette[0] ?? '#000000')
+  }, [backgroundColor, palette])
 
-  const canvasId = snapshot?.id
+  const snapshotVersion = board?.snapshotVersion ?? 0
+  const nextAllowedAt = snapshot?.next_allowed_at
+  const serverTime = snapshot?.server_time
   useEffect(() => {
-    if (canvasId === undefined) return
-    const socket = subscribeToCanvas(canvasId, token)
-    socket.onmessage = event => {
-      try {
-        const placement = decodeCanvasEvent(event.data)
-        setSnapshot(board => applyPlacement(board, placement))
-        setHistory(items => addPlacement(items, placement))
-      } catch (error) {
-        setError(message(error))
-      }
-    }
-    return () => {
-      socket.onmessage = null
-      socket.close()
-    }
-  }, [canvasId, token])
+    if (!serverTime || snapshotVersion < latestLocalVersion.current) return
+    const remaining = nextAllowedAt ? Math.max(0, Date.parse(nextAllowedAt) - Date.parse(serverTime)) : 0
+    setReadyAt(Date.now() + remaining)
+    setNow(Date.now())
+  }, [nextAllowedAt, serverTime, snapshotVersion])
 
   async function place() {
     if (!snapshot || placingRef.current) return
@@ -103,13 +56,13 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     try {
       const accepted = await placePixel(snapshot.id, token, input)
       setPending(null)
-      setSnapshot(board => applyPlacement(board, accepted))
-      setHistory(items => addPlacement(items, accepted))
+      latestLocalVersion.current = accepted.version
+      receive(accepted)
       setReadyAt(Date.now() + snapshot.cooldown_seconds * 1000)
       setNow(Date.now())
       setNotice(`Pixel saved at (${accepted.x}, ${accepted.y}).`)
-      // Reload authoritative cooldowns, including the original time for successful retries.
-      setReload(value => value + 1)
+      // A retry may return an earlier placement with an already expired cooldown.
+      if (pending) refresh()
     } catch (error) {
       if (error instanceof ApiError) {
         if (error.status === 401) { onExpired(); return }
@@ -132,15 +85,15 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     <section aria-label="Shared canvas">
       <div className="board-heading">
         <div><p className="eyebrow">One pixel. A shared picture.</p><h1>{snapshot?.name ?? 'Your canvas'}</h1></div>
-        <button disabled={loading || placing} onClick={() => { setNotice(''); setReload(value => value + 1) }}>
+        <button disabled={loading || placing} onClick={() => { setNotice(''); setError(''); refresh() }}>
           {loading ? 'Loading…' : 'Refresh canvas'}
         </button>
       </div>
-      {error && <p className="error" role="alert">{error}</p>}
+      {(error || syncError) && <p className="error" role="alert">{error || syncError}</p>}
       <p className="notice" role="status" aria-live="polite">{notice || (loading ? 'Loading canvas and history…' : '')}</p>
       {snapshot && <div className="workspace">
         <div className="card canvas-card">
-          <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span>Version {snapshot.version}</span></div>
+          <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span role="status">{connection} · Version {snapshot.version}</span></div>
           <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color} onSelect={setSelected} />
           <p className="muted">Click or tap a pixel to select it. You can also focus the canvas and use the arrow keys.</p>
         </div>

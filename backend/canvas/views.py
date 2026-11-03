@@ -33,6 +33,10 @@ class CanvasViewSet(viewsets.ReadOnlyModelViewSet):
             data["next_allowed_at"] = state.next_allowed_at if state else None
             # Let the client display cooldowns without relying on its own clock being correct.
             data["server_time"] = timezone.now()
+            if request.query_params.get("include_history") == "1":
+                # Read history under the same lock so it matches the snapshot version.
+                rows = canvas.placements.all()[:HistoryPagination.page_size]
+                data["history"] = PlacementSerializer(rows, many=True).data
         return Response(data)
 
     @action(detail=True, methods=["post"])

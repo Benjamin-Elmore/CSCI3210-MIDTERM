@@ -53,22 +53,17 @@ export function listCanvases(token: string, signal: AbortSignal) {
   return request('canvases/', body => array(body, canvas), { token, signal })
 }
 
-export function getSnapshot(id: number, token: string, signal?: AbortSignal) {
-  return request(`canvases/${id}/snapshot/`, (body): Snapshot => {
+export function getSnapshot(id: number, token: string, signal: AbortSignal) {
+  return request(`canvases/${id}/snapshot/?include_history=1`, body => {
     const data = record(body)
-    return {
+    const snapshot: Snapshot = {
       ...canvas(body), pixels: array(data.pixels, pixel),
       background_color: string(data.background_color),
       next_allowed_at: data.next_allowed_at === null ? null : string(data.next_allowed_at),
       server_time: string(data.server_time),
     }
+    return { snapshot, history: array(data.history, decodePlacement) }
   }, { token, signal })
-}
-
-export function getHistory(id: number, token: string, signal?: AbortSignal) {
-  return request(`canvases/${id}/history/`, body => array(record(body).results, decodePlacement), {
-    token, signal,
-  })
 }
 
 export function placePixel(id: number, token: string, data: PlacementInput) {
