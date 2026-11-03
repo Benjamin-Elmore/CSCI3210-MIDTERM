@@ -41,7 +41,7 @@ function pixel(body: unknown): Pixel {
   return { x: number(data.x), y: number(data.y), color: string(data.color) }
 }
 
-function placement(body: unknown): Placement {
+export function decodePlacement(body: unknown): Placement {
   const data = record(body)
   return {
     ...pixel(body), id: number(data.id), request_id: string(data.request_id),
@@ -66,11 +66,11 @@ export function getSnapshot(id: number, token: string, signal?: AbortSignal) {
 }
 
 export function getHistory(id: number, token: string, signal?: AbortSignal) {
-  return request(`canvases/${id}/history/`, body => array(record(body).results, placement), {
+  return request(`canvases/${id}/history/`, body => array(record(body).results, decodePlacement), {
     token, signal,
   })
 }
 
 export function placePixel(id: number, token: string, data: PlacementInput) {
-  return request(`canvases/${id}/placements/`, placement, { token, method: 'POST', data })
+  return request(`canvases/${id}/placements/`, decodePlacement, { token, method: 'POST', data })
 }

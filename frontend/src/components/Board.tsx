@@ -1,9 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { getHistory, getSnapshot, listCanvases, placePixel } from '../api/canvas'
 import type { Placement, PlacementInput, Snapshot } from '../api/canvas'
+import { decodeCanvasEvent, subscribeToCanvas } from '../api/canvasSocket'
 import { ApiError, message } from '../api/client'
 import { PixelCanvas } from './PixelCanvas'
 import type { Coordinate } from './PixelCanvas'
+
+function applyPlacement(board: Snapshot | null, placement: Placement): Snapshot | null {
+  if (!board || placement.version !== board.version + 1) return board
+  const pixels = board.pixels.filter(pixel => pixel.x !== placement.x || pixel.y !== placement.y)
+  return { ...board, version: placement.version, pixels: [...pixels, placement] }
+}
+
+function addPlacement(history: Placement[], placement: Placement) {
+  if (history.some(item => item.id === placement.id)) return history
+  return [...history, placement].sort((a, b) => b.version - a.version).slice(0, 50)
+}
 
 export function Board({ token, onExpired }: { token: string; onExpired: () => void }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
@@ -60,6 +72,25 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     return () => controller.abort()
   }, [token, reload, onExpired])
 
+  const canvasId = snapshot?.id
+  useEffect(() => {
+    if (canvasId === undefined) return
+    const socket = subscribeToCanvas(canvasId, token)
+    socket.onmessage = event => {
+      try {
+        const placement = decodeCanvasEvent(event.data)
+        setSnapshot(board => applyPlacement(board, placement))
+        setHistory(items => addPlacement(items, placement))
+      } catch (error) {
+        setError(message(error))
+      }
+    }
+    return () => {
+      socket.onmessage = null
+      socket.close()
+    }
+  }, [canvasId, token])
+
   async function place() {
     if (!snapshot || placingRef.current) return
     placingRef.current = true
@@ -72,15 +103,11 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     try {
       const accepted = await placePixel(snapshot.id, token, input)
       setPending(null)
-      setSnapshot(board => board ? {
-        ...board,
-        version: Math.max(board.version, accepted.version),
-        pixels: [...board.pixels.filter(pixel => pixel.x !== accepted.x || pixel.y !== accepted.y), accepted],
-      } : null)
-      setHistory(items => [accepted, ...items.filter(item => item.id !== accepted.id)].slice(0, 50))
+      setSnapshot(board => applyPlacement(board, accepted))
+      setHistory(items => addPlacement(items, accepted))
       setReadyAt(Date.now() + snapshot.cooldown_seconds * 1000)
       setNow(Date.now())
-      setNotice(`Pixel saved at (${accepted.x}, ${accepted.y}). Refresh the page to see it again.`)
+      setNotice(`Pixel saved at (${accepted.x}, ${accepted.y}).`)
       // Reload authoritative cooldowns, including the original time for successful retries.
       setReload(value => value + 1)
     } catch (error) {
@@ -114,7 +141,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
       {snapshot && <div className="workspace">
         <div className="card canvas-card">
           <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span>Version {snapshot.version}</span></div>
-          <PixelCanvas snapshot={snapshot} selected={selected} color={color} onSelect={setSelected} />
+          <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color} onSelect={setSelected} />
           <p className="muted">Click or tap a pixel to select it. You can also focus the canvas and use the arrow keys.</p>
         </div>
         <aside className="tools">
@@ -146,7 +173,6 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
           </section>
         </aside>
       </div>}
-      <p className="muted footer-note">Use Refresh canvas to load other players’ changes.</p>
     </section>
   )
 }

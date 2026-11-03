@@ -1,27 +1,37 @@
 import { useEffect, useRef } from 'react'
 import type { KeyboardEvent, PointerEvent } from 'react'
-import type { Snapshot } from '../api/canvas'
+import type { Placement, Snapshot } from '../api/canvas'
 
 export interface Coordinate { x: number; y: number }
 
-export function PixelCanvas({ snapshot, selected, color, onSelect }: {
+export function PixelCanvas({ snapshot, history, selected, color, onSelect }: {
   snapshot: Snapshot
+  history: Placement[]
   selected: Coordinate
   color: string
   onSelect: (coordinate: Coordinate) => void
 }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const drawn = useRef<Snapshot | null>(null)
 
   useEffect(() => {
     const context = ref.current?.getContext('2d')
     if (!context) return
-    context.fillStyle = snapshot.background_color
-    context.fillRect(0, 0, snapshot.width, snapshot.height)
-    for (const pixel of snapshot.pixels) {
+    const previous = drawn.current
+    const updates = previous && previous.id === snapshot.id && previous.server_time === snapshot.server_time
+      ? history.filter(item => item.version > previous.version && item.version <= snapshot.version).reverse()
+      : null
+    const incremental = previous && updates && updates.length === snapshot.version - previous.version
+    if (!incremental) {
+      context.fillStyle = snapshot.background_color
+      context.fillRect(0, 0, snapshot.width, snapshot.height)
+    }
+    for (const pixel of incremental ? updates : snapshot.pixels) {
       context.fillStyle = pixel.color
       context.fillRect(pixel.x, pixel.y, 1, 1)
     }
-  }, [snapshot])
+    drawn.current = snapshot
+  }, [history, snapshot])
 
   function select(event: PointerEvent<HTMLCanvasElement>) {
     // The canvas bitmap and its displayed size differ. Scale before rounding.
