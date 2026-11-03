@@ -46,6 +46,30 @@ class CanvasRulesTests(TransactionTestCase):
         history = self.client.get(f"/api/canvases/{self.canvas.pk}/history/")
         self.assertEqual(history.data["count"], 1)
 
+    def test_personal_history_filters_before_pagination(self):
+        other = get_user_model().objects.create_user(username="other")
+        Placement.objects.bulk_create([
+            Placement(
+                canvas=self.canvas,
+                user=self.user if version <= 51 else other,
+                x=0,
+                y=0,
+                color="#FF0000",
+                version=version,
+                request_id=uuid4(),
+            )
+            for version in range(1, 102)
+        ])
+        url = f"/api/canvases/{self.canvas.pk}/history/"
+        recent = self.client.get(url)
+        self.assertEqual([row["version"] for row in recent.data["results"]], list(range(101, 51, -1)))
+        mine = self.client.get(url, {"mine": 1})
+        self.assertEqual(mine.status_code, 200)
+        self.assertEqual(mine.data["count"], 51)
+        self.assertEqual([row["version"] for row in mine.data["results"]], list(range(51, 1, -1)))
+        older = self.client.get(url, {"mine": 1, "page": 2})
+        self.assertEqual([row["version"] for row in older.data["results"]], [1])
+
     def test_authentication_required(self):
         self.client.force_authenticate(user=None)
         self.assertEqual(self.post(self.payload()).status_code, 401)

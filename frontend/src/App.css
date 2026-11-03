@@ -421,3 +421,14 @@ canvas {
   width: 5rem;
   padding: 8px;
 }
+
+.history-pages {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.history button[aria-pressed="true"] {
+  background: #eaf0e3;
+  border-color: #326b53;
+}

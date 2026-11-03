@@ -69,3 +69,10 @@ export function getSnapshot(id: number, token: string, signal: AbortSignal) {
 export function placePixel(id: number, token: string, data: PlacementInput) {
   return request(`canvases/${id}/placements/`, decodePlacement, { token, method: 'POST', data })
 }
+
+export function getMyHistory(id: number, page: number, token: string, signal: AbortSignal) {
+  return request('canvases/' + id + '/history/?mine=1&page=' + page, body => {
+    const data = record(body)
+    return { items: array(data.results, decodePlacement), hasNext: data.next !== null }
+  }, { token, signal })
+}

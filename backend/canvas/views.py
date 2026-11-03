@@ -60,5 +60,8 @@ class CanvasViewSet(viewsets.ReadOnlyModelViewSet):
         canvas = self.get_object()
         paginator = HistoryPagination()
         # Limit each response instead of loading the entire placement history.
-        rows = paginator.paginate_queryset(canvas.placements.all(), request)
+        placements = canvas.placements.all()
+        if request.query_params.get("mine") == "1":
+            placements = placements.filter(user=request.user)
+        rows = paginator.paginate_queryset(placements, request)
         return paginator.get_paginated_response(PlacementSerializer(rows, many=True).data)

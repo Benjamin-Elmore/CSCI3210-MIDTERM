@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { placePixel } from '../api/canvas'
+import { getMyHistory, placePixel } from '../api/canvas'
 import type { PlacementInput, Snapshot } from '../api/canvas'
 import { useLiveCanvas } from '../hooks/useLiveCanvas'
 import { ApiError, message } from '../api/client'
@@ -35,6 +35,11 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const [placing, setPlacing] = useState(false)
   const [readyAt, setReadyAt] = useState(0)
   const [now, setNow] = useState(() => Date.now())
+  const [mine, setMine] = useState(false)
+  const [historyPage, setHistoryPage] = useState(1)
+  const [historyResult, setHistoryResult] = useState<Awaited<ReturnType<typeof getMyHistory>> | null>(null)
+  const [historyError, setHistoryError] = useState('')
+  const [localVersion, setLocalVersion] = useState(0)
   const [pending, setPending] = useState<PlacementInput | null>(null)
   const placingRef = useRef(false)
   const latestLocalVersion = useRef(0)
@@ -53,6 +58,22 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   }, [backgroundColor, palette])
 
   const snapshotVersion = board?.snapshotVersion ?? 0
+  const canvasId = snapshot?.id
+  useEffect(() => {
+    if (!mine || canvasId === undefined) return
+    const controller = new AbortController()
+    void getMyHistory(canvasId, historyPage, token, controller.signal).then(result => {
+      if (controller.signal.aborted) return
+      setHistoryResult(result)
+      setHistoryError('')
+    }).catch(error => {
+      if (controller.signal.aborted) return
+      if (error instanceof ApiError && error.status === 401) onExpired()
+      else setHistoryError(message(error))
+    })
+    return () => controller.abort()
+  }, [canvasId, historyPage, localVersion, mine, onExpired, snapshotVersion, token])
+
   const nextAllowedAt = snapshot?.next_allowed_at
   const serverTime = snapshot?.server_time
   useEffect(() => {
@@ -61,6 +82,12 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     setReadyAt(Date.now() + remaining)
     setNow(Date.now())
   }, [nextAllowedAt, serverTime, snapshotVersion])
+
+  function changeHistoryPage(page: number) {
+    setHistoryPage(page)
+    setHistoryResult(null)
+    setHistoryError('')
+  }
 
   function jump(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -104,6 +131,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
       const accepted = await placePixel(snapshot.id, token, input)
       setPending(null)
       latestLocalVersion.current = accepted.version
+      setLocalVersion(accepted.version)
       receive(accepted)
       setReadyAt(Date.now() + snapshot.cooldown_seconds * 1000)
       setNow(Date.now())
@@ -126,6 +154,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     }
   }
 
+  const visibleHistory = mine ? historyResult?.items ?? [] : history
   const remaining = Math.max(0, Math.ceil((readyAt - now) / 1000))
 
   return (
@@ -179,14 +208,26 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <p className="muted">One pixel every {snapshot.cooldown_seconds} seconds. Each accepted placement is saved.</p>
           </section>
           <section className="card history" aria-labelledby="history-title">
-            <h2 id="history-title">Recent placements</h2>
-            {history.length === 0 ? <p className="muted">A blank canvas. Make the first mark.</p> : <ol>
-              {history.map(item => <li key={item.id}>
+            <h2 id="history-title">{mine ? 'My placements' : 'Recent placements'}</h2>
+            <div className="canvas-controls" role="group" aria-label="Placement history filter">
+              <button aria-pressed={!mine} onClick={() => setMine(false)}>All placements</button>
+              <button aria-pressed={mine} onClick={() => { if (!mine) { changeHistoryPage(1); setMine(true) } }}>
+                My placements
+              </button>
+            </div>
+            {mine && historyError ? <p role="alert">{historyError}</p> :
+              mine && !historyResult ? <p className="muted" role="status">Loading placements…</p> :
+              visibleHistory.length === 0 ? <p className="muted">{mine ? 'You have no placements yet.' : 'A blank canvas. Make the first mark.'}</p> : <ol>
+              {visibleHistory.map(item => <li key={item.id}>
                 <span className="history-color" style={{ backgroundColor: item.color }} aria-label={item.color} />
                 <span>({item.x}, {item.y})<small>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></span>
                 <span className="muted">#{item.version}</span>
               </li>)}
             </ol>}
+            {mine && (historyPage > 1 || historyResult?.hasNext) && <div className="history-pages">
+              <button disabled={historyPage === 1} onClick={() => changeHistoryPage(historyPage - 1)}>Newer</button>
+              <button disabled={!historyResult?.hasNext} onClick={() => changeHistoryPage(historyPage + 1)}>Older</button>
+            </div>}
           </section>
         </aside>
       </div>}
