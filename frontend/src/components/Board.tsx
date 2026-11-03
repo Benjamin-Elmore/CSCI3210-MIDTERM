@@ -41,6 +41,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const [historyError, setHistoryError] = useState('')
   const [localVersion, setLocalVersion] = useState(0)
   const [pending, setPending] = useState<PlacementInput | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const placingRef = useRef(false)
   const latestLocalVersion = useRef(0)
 
@@ -82,6 +83,24 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     setReadyAt(Date.now() + remaining)
     setNow(Date.now())
   }, [nextAllowedAt, serverTime, snapshotVersion])
+
+  function exportPng() {
+    const canvas = canvasRef.current
+    if (!canvas || !snapshot) return
+    const filename = snapshot.slug + '.png'
+    canvas.toBlob(blob => {
+      if (!blob) {
+        setNotice('Could not export the canvas.')
+        return
+      }
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      link.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }, 'image/png')
+  }
 
   function changeHistoryPage(page: number) {
     setHistoryPage(page)
@@ -175,6 +194,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <button disabled={view.zoom === maxZoom} onClick={() => setView(zoomView(view, view.zoom * 2))}>Zoom in</button>
             <button disabled={view.zoom === 1} onClick={() => setView(overview)}>Reset view</button>
             <span aria-live="polite">{view.zoom}×</span>
+            <button onClick={exportPng}>Export PNG</button>
           </div>
           <form className="coordinate-jump" onSubmit={jump}>
             <label>X <input name="x" inputMode="numeric" defaultValue="0" required /></label>
@@ -183,7 +203,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
           </form>
           {jumpError && <p className="error" role="alert">{jumpError}</p>}
           <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color}
-            view={view} onView={setView} onSelect={select} />
+            view={view} canvasRef={canvasRef} onView={setView} onSelect={select} />
           <p className="muted">Click, tap, or use the arrow keys to select a pixel. Scroll or use the buttons to zoom, then drag to pan.</p>
         </div>
         <aside className="tools">

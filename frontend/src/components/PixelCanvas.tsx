@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { KeyboardEvent, PointerEvent } from 'react'
+import type { KeyboardEvent, PointerEvent, RefObject } from 'react'
 import type { Placement, Snapshot } from '../api/canvas'
 
 export interface Coordinate { x: number; y: number }
@@ -16,22 +16,22 @@ export function zoomView(view: CanvasView, zoom: number): CanvasView {
   return zoom === 1 ? overview : { ...view, zoom }
 }
 
-export function PixelCanvas({ snapshot, history, selected, color, view, onView, onSelect }: {
+export function PixelCanvas({ snapshot, history, selected, color, view, canvasRef, onView, onSelect }: {
   snapshot: Snapshot
   history: Placement[]
   selected: Coordinate
   color: string
   view: CanvasView
+  canvasRef: RefObject<HTMLCanvasElement | null>
   onView: (view: CanvasView) => void
   onSelect: (coordinate: Coordinate) => void
 }) {
-  const ref = useRef<HTMLCanvasElement>(null)
   const frame = useRef<HTMLDivElement>(null)
   const drawn = useRef<Snapshot | null>(null)
   const drag = useRef<{ id: number; x: number; y: number; view: CanvasView; moved: boolean } | null>(null)
 
   useEffect(() => {
-    const context = ref.current?.getContext('2d')
+    const context = canvasRef.current?.getContext('2d')
     if (!context) return
     const previous = drawn.current
     const updates = previous && previous.id === snapshot.id && previous.server_time === snapshot.server_time
@@ -47,7 +47,7 @@ export function PixelCanvas({ snapshot, history, selected, color, view, onView, 
       context.fillRect(pixel.x, pixel.y, 1, 1)
     }
     drawn.current = snapshot
-  }, [history, snapshot])
+  }, [canvasRef, history, snapshot])
 
   function startDrag(event: PointerEvent<HTMLCanvasElement>) {
     if (event.button !== 0 || drag.current) return
@@ -130,7 +130,7 @@ export function PixelCanvas({ snapshot, history, selected, color, view, onView, 
         transform: 'translate(' + (0.5 - view.x * view.zoom) * 100 + '%, ' +
           (0.5 - view.y * view.zoom) * 100 + '%) scale(' + view.zoom + ')',
       }}>
-        <canvas ref={ref} width={snapshot.width} height={snapshot.height} tabIndex={0}
+        <canvas ref={canvasRef} width={snapshot.width} height={snapshot.height} tabIndex={0}
           aria-label={snapshot.name + '. Select a pixel with a click, tap, or arrow keys. Selected pixel ' + selected.x + ', ' + selected.y + '.'}
           onPointerDown={startDrag} onPointerMove={pan} onPointerUp={endDrag}
           onLostPointerCapture={event => { if (drag.current?.id === event.pointerId) drag.current = null }}
