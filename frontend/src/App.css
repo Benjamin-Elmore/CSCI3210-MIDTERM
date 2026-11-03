@@ -403,3 +403,21 @@ canvas {
   background: #eaf0e3;
   outline: 2px solid #326b53;
 }
+
+.coordinate-jump {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.coordinate-jump label {
+  margin: 0;
+}
+
+.coordinate-jump input {
+  display: block;
+  width: 5rem;
+  padding: 8px;
+}

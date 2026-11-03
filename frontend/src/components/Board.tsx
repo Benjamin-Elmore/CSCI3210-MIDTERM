@@ -1,10 +1,25 @@
 import { useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import { placePixel } from '../api/canvas'
-import type { PlacementInput } from '../api/canvas'
+import type { PlacementInput, Snapshot } from '../api/canvas'
 import { useLiveCanvas } from '../hooks/useLiveCanvas'
 import { ApiError, message } from '../api/client'
 import { maxZoom, overview, PixelCanvas, zoomView } from './PixelCanvas'
 import type { Coordinate } from './PixelCanvas'
+
+function coordinateFrom(x: string, y: string, snapshot: Snapshot): Coordinate | null {
+  if (!/^\d+$/.test(x) || !/^\d+$/.test(y)) return null
+  const coordinate = { x: Number(x), y: Number(y) }
+  return coordinate.x < snapshot.width && coordinate.y < snapshot.height ? coordinate : null
+}
+
+function centeredView(coordinate: Coordinate, snapshot: Snapshot, zoom: number) {
+  return {
+    x: (coordinate.x + 0.5) / snapshot.width,
+    y: (coordinate.y + 0.5) / snapshot.height,
+    zoom: Math.max(4, zoom),
+  }
+}
 
 export function Board({ token, onExpired }: { token: string; onExpired: () => void }) {
   const { board, connection, error: syncError, loading, refresh, receive } = useLiveCanvas(token, onExpired)
@@ -12,6 +27,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
   const [view, setView] = useState(overview)
+  const [jumpError, setJumpError] = useState('')
   const [eyedropper, setEyedropper] = useState(false)
   const [color, setColor] = useState('')
   const [error, setError] = useState('')
@@ -45,6 +61,21 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     setReadyAt(Date.now() + remaining)
     setNow(Date.now())
   }, [nextAllowedAt, serverTime, snapshotVersion])
+
+  function jump(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!snapshot) return
+    const data = new FormData(event.currentTarget)
+    const coordinate = coordinateFrom(String(data.get('x')), String(data.get('y')), snapshot)
+    if (!coordinate) {
+      setJumpError('Enter whole coordinates from 0 to ' + (snapshot.width - 1) + ' for X and 0 to ' + (snapshot.height - 1) + ' for Y.')
+      return
+    }
+    setJumpError('')
+    setEyedropper(false)
+    setSelected(coordinate)
+    setView(centeredView(coordinate, snapshot, view.zoom))
+  }
 
   function select(coordinate: Coordinate) {
     setSelected(coordinate)
@@ -116,6 +147,12 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <button disabled={view.zoom === 1} onClick={() => setView(overview)}>Reset view</button>
             <span aria-live="polite">{view.zoom}×</span>
           </div>
+          <form className="coordinate-jump" onSubmit={jump}>
+            <label>X <input name="x" inputMode="numeric" defaultValue="0" required /></label>
+            <label>Y <input name="y" inputMode="numeric" defaultValue="0" required /></label>
+            <button type="submit">Jump to pixel</button>
+          </form>
+          {jumpError && <p className="error" role="alert">{jumpError}</p>}
           <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color}
             view={view} onView={setView} onSelect={select} />
           <p className="muted">Click, tap, or use the arrow keys to select a pixel. Scroll or use the buttons to zoom, then drag to pan.</p>
