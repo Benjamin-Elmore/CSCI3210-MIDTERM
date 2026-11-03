@@ -232,7 +232,22 @@ input {
   margin-bottom: 20px;
 }
 
+.canvas-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.canvas-layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: top left;
+}
+
 .canvas-frame {
+  overflow: hidden;
   position: relative;
   width: 100%;
   outline: 1px solid #c8d0c2;
@@ -245,13 +260,13 @@ canvas {
   height: 100%;
   image-rendering: pixelated;
   cursor: crosshair;
+  touch-action: none;
 }
 
 .pixel-selection {
   position: absolute;
   pointer-events: none;
   outline: 1px solid white;
-  box-shadow: 0 0 0 2px #192c27;
   opacity: 0.8;
 }
 

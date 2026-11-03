@@ -3,7 +3,7 @@ import { placePixel } from '../api/canvas'
 import type { PlacementInput } from '../api/canvas'
 import { useLiveCanvas } from '../hooks/useLiveCanvas'
 import { ApiError, message } from '../api/client'
-import { PixelCanvas } from './PixelCanvas'
+import { maxZoom, overview, PixelCanvas, zoomView } from './PixelCanvas'
 import type { Coordinate } from './PixelCanvas'
 
 export function Board({ token, onExpired }: { token: string; onExpired: () => void }) {
@@ -11,6 +11,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const snapshot = board?.snapshot
   const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
+  const [view, setView] = useState(overview)
   const [color, setColor] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -94,8 +95,15 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
       {snapshot && <div className="workspace">
         <div className="card canvas-card">
           <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span role="status">{connection} · Version {snapshot.version}</span></div>
-          <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color} onSelect={setSelected} />
-          <p className="muted">Click or tap a pixel to select it. You can also focus the canvas and use the arrow keys.</p>
+          <div className="canvas-controls" role="group" aria-label="Canvas zoom">
+            <button disabled={view.zoom === 1} onClick={() => setView(zoomView(view, view.zoom / 2))}>Zoom out</button>
+            <button disabled={view.zoom === maxZoom} onClick={() => setView(zoomView(view, view.zoom * 2))}>Zoom in</button>
+            <button disabled={view.zoom === 1} onClick={() => setView(overview)}>Reset view</button>
+            <span aria-live="polite">{view.zoom}×</span>
+          </div>
+          <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color}
+            view={view} onView={setView} onSelect={setSelected} />
+          <p className="muted">Click, tap, or use the arrow keys to select a pixel. Scroll or use the buttons to zoom, then drag to pan.</p>
         </div>
         <aside className="tools">
           <section className="card" aria-labelledby="palette-title">
