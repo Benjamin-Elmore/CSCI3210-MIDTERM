@@ -12,6 +12,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
   const [view, setView] = useState(overview)
+  const [eyedropper, setEyedropper] = useState(false)
   const [color, setColor] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -44,6 +45,20 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     setReadyAt(Date.now() + remaining)
     setNow(Date.now())
   }, [nextAllowedAt, serverTime, snapshotVersion])
+
+  function select(coordinate: Coordinate) {
+    setSelected(coordinate)
+    if (!eyedropper || !snapshot) return
+    const pixel = snapshot.pixels.find(item => item.x === coordinate.x && item.y === coordinate.y)
+    const sampled = pixel?.color ?? snapshot.background_color
+    setEyedropper(false)
+    if (snapshot.palette.includes(sampled)) {
+      setColor(sampled)
+      setNotice('Picked ' + sampled + '.')
+    } else {
+      setNotice('That color is unavailable in the palette.')
+    }
+  }
 
   async function place() {
     if (!snapshot || placingRef.current) return
@@ -102,7 +117,7 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <span aria-live="polite">{view.zoom}×</span>
           </div>
           <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color}
-            view={view} onView={setView} onSelect={setSelected} />
+            view={view} onView={setView} onSelect={select} />
           <p className="muted">Click, tap, or use the arrow keys to select a pixel. Scroll or use the buttons to zoom, then drag to pan.</p>
         </div>
         <aside className="tools">
@@ -111,8 +126,12 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <div className="palette" role="group" aria-label="Color palette">
               {snapshot.palette.map(item => <button key={item} className="swatch" style={{ backgroundColor: item }}
                 aria-label={`Color ${item}`} aria-pressed={item === color} title={item}
-                onClick={() => setColor(item)} />)}
+                onClick={() => { setColor(item); setEyedropper(false) }} />)}
             </div>
+            <button className="eyedropper" aria-pressed={eyedropper} onClick={() => setEyedropper(active => !active)}>
+              Eyedropper
+            </button>
+            {eyedropper && <p className="muted" role="status">Select a pixel to pick its color.</p>}
             <div className="selection-summary"><span className="color-preview" style={{ backgroundColor: color }} />
               <span><strong>{color}</strong><br /><span className="muted">Pixel ({selected.x}, {selected.y})</span></span>
             </div>

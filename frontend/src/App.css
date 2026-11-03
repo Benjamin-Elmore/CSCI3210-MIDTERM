@@ -394,3 +394,12 @@ canvas {
     grid-template-columns: 1fr;
   }
 }
+
+.eyedropper {
+  margin-top: 16px;
+}
+
+.eyedropper[aria-pressed="true"] {
+  background: #eaf0e3;
+  outline: 2px solid #326b53;
+}
