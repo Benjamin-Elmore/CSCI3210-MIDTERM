@@ -44,7 +44,7 @@ From `backend`, run `..\.venv\Scripts\python manage.py test`. From `frontend`, r
 
 ## GitHub Pages
 
-The Pages workflow builds the frontend with the repository's project path. Set the repository variable `VITE_BACKEND_ORIGIN` to the public HTTPS origin of the Django service, without a trailing slash, and select GitHub Actions under Settings → Pages. The backend must serve HTTPS and secure WebSockets and allow the Pages origin for HTTP and WebSocket requests. The workflow stops before deployment when the backend origin is missing.
+The Pages workflow builds the frontend with the repository's project path and connects to the Render API. To use a different backend, set the repository variable `VITE_BACKEND_ORIGIN` to its public HTTPS origin without a trailing slash. Select GitHub Actions under Settings → Pages. The backend must serve HTTPS and secure WebSockets and allow the Pages origin for HTTP and WebSocket requests.
 
 ## Render backend
 

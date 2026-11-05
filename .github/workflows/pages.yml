@@ -1,0 +1,56 @@
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.25.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - uses: actions/configure-pages@v5
+      - name: Check backend configuration
+        env:
+          BACKEND_ORIGIN: ${{ vars.VITE_BACKEND_ORIGIN || 'https://pixel-commons-api.onrender.com' }}
+        run: |
+          node -e 'const value = process.env.BACKEND_ORIGIN; try { const url = new URL(value); if (url.protocol !== "https:" || url.origin !== value) throw new Error(); } catch { console.error("Set the VITE_BACKEND_ORIGIN repository variable to the HTTPS backend origin without a trailing slash."); process.exit(1); }'
+      - name: Build frontend
+        working-directory: frontend
+        env:
+          VITE_BASE_PATH: /CSCI3210-MIDTERM/
+          VITE_BACKEND_ORIGIN: ${{ vars.VITE_BACKEND_ORIGIN || 'https://pixel-commons-api.onrender.com' }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: frontend/dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
