@@ -1,11 +1,30 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { getSnapshot, listCanvases } from '../api/canvas'
-import type { Placement } from '../api/canvas'
+import type { Pixel, Placement, SnapshotMetadata } from '../api/canvas'
 import { decodeCanvasEvent, subscribeToCanvas } from '../api/canvasSocket'
 import { ApiError, message } from '../api/client'
 
-type BoardState = Awaited<ReturnType<typeof getSnapshot>> & { snapshotVersion: number }
+type PixelRows = ReadonlyArray<ReadonlyMap<number, Pixel>>
+type BoardState = {
+  snapshot: SnapshotMetadata
+  version: number
+  pixels: PixelRows
+  history: Placement[]
+  readyAt: number
+}
 type Connection = 'Connecting' | 'Live' | 'Resyncing' | 'Reconnecting'
+
+function pixelRows(height: number, pixels: Pixel[]): PixelRows {
+  const rows = Array.from({ length: height }, () => new Map<number, Pixel>())
+  for (const pixel of pixels) rows[pixel.y].set(pixel.x, pixel)
+  return rows
+}
+
+function cooldownDeadline(snapshot: SnapshotMetadata) {
+  if (!snapshot.next_allowed_at) return 0
+  const remaining = Date.parse(snapshot.next_allowed_at) - Date.parse(snapshot.server_time)
+  return remaining > 0 ? Date.now() + remaining : 0
+}
 
 export function useLiveCanvas(token: string, onExpired: () => void) {
   const [board, setBoard] = useState<BoardState | null>(null)
@@ -14,6 +33,8 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
   const [error, setError] = useState('')
   const refreshRef = useRef<() => void>(() => {})
   const receiveRef = useRef<(placement: Placement) => void>(() => {})
+  const refresh = useCallback(() => refreshRef.current(), [])
+  const acceptPlacement = useCallback((placement: Placement) => receiveRef.current(placement), [])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -25,30 +46,45 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
     let connected = false
     let fetching = false
     let refreshAgain = false
-    let retryDelay = 500
+    let latestKnownVersion = 0
+    let reconnectDelay = 500
+    let syncDelay = 500
     let reconnectTimer: number | undefined
     let syncTimer: number | undefined
 
     function flush() {
       if (!current) return
       for (const version of pending.keys()) {
-        if (version <= current.snapshot.version) pending.delete(version)
+        if (version <= current.version) pending.delete(version)
       }
 
-      let next = pending.get(current.snapshot.version + 1)
-      while (next) {
-        const previous: BoardState = current
-        const { snapshot, history } = previous
-        const { x, y, color, version } = next
-        const pixels = snapshot.pixels.filter(pixel => pixel.x !== x || pixel.y !== y)
-        current = {
-          snapshot: { ...snapshot, version, pixels: [...pixels, { x, y, color }] },
-          snapshotVersion: previous.snapshotVersion,
-          history: [next, ...history].slice(0, 50),
-        }
+      const updates: Placement[] = []
+      let version = current.version
+      for (let next = pending.get(version + 1); next; next = pending.get(version + 1)) {
+        updates.push(next)
+        version = next.version
         pending.delete(version)
-        next = pending.get(version + 1)
       }
+
+      if (updates.length) {
+        // Reuse untouched rows and copy each changed row at most once per batch.
+        const pixels = [...current.pixels]
+        const changedRows = new Map<number, Map<number, Pixel>>()
+        for (const update of updates) {
+          let row = changedRows.get(update.y)
+          if (!row) {
+            row = new Map(pixels[update.y])
+            changedRows.set(update.y, row)
+            pixels[update.y] = row
+          }
+          row.set(update.x, update)
+        }
+        current = {
+          ...current, version, pixels,
+          history: [...updates.reverse(), ...current.history].slice(0, 50),
+        }
+      }
+
       setBoard(current)
     }
 
@@ -57,15 +93,25 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
       syncTimer = window.setTimeout(() => {
         syncTimer = undefined
         void synchronize()
-      }, 500)
+      }, syncDelay)
+      syncDelay = Math.min(syncDelay * 2, 8000)
+    }
+
+    function checkVersion() {
+      if (!current || fetching || latestKnownVersion <= current.version) return
+      if (connected) setConnection('Resyncing')
+      scheduleSync()
     }
 
     async function synchronize() {
+      if (signal.aborted) return
       if (fetching) {
         refreshAgain = true
         return
       }
 
+      window.clearTimeout(syncTimer)
+      syncTimer = undefined
       fetching = true
       if (connected) setConnection('Resyncing')
       try {
@@ -77,19 +123,29 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
           canvasId = canvas.id
           connect(canvasId)
         }
-        const snapshot = await getSnapshot(canvasId, token, signal)
+        const { snapshot: { pixels, ...snapshot }, history } = await getSnapshot(canvasId, token, signal)
         if (signal.aborted) return
-        current = { ...snapshot, snapshotVersion: snapshot.snapshot.version }
+        if (!current || snapshot.version >= current.version) {
+          current = {
+            snapshot, history, version: snapshot.version,
+            pixels: pixelRows(snapshot.height, pixels), readyAt: cooldownDeadline(snapshot),
+          }
+        }
         flush()
         setError('')
-        if (pending.size) scheduleSync()
-        else if (connected && !refreshAgain) setConnection('Live')
+        if (latestKnownVersion > current.version) scheduleSync()
+        else {
+          syncDelay = 500
+          if (connected && !refreshAgain) setConnection('Live')
+        }
       } catch (error) {
         if (signal.aborted) return
-        if (error instanceof ApiError && error.status === 401) onExpired()
-        else {
+        if (error instanceof ApiError && error.status === 401) {
+          controller.abort()
+          onExpired()
+        } else {
           setError(message(error))
-          if (connected) scheduleSync()
+          scheduleSync()
         }
       } finally {
         fetching = false
@@ -104,44 +160,57 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
     }
 
     function receive(placement: Placement) {
-      if (current && placement.version <= current.snapshot.version) return
+      if (signal.aborted || (current && placement.version <= current.version)) return
+      latestKnownVersion = Math.max(latestKnownVersion, placement.version)
       pending.set(placement.version, placement)
       if (fetching || !current) return
       flush()
-      if (pending.size) {
-        if (connected) setConnection('Resyncing')
-        scheduleSync()
-      }
+      checkVersion()
+    }
+
+    function reconnect(id: number) {
+      connected = false
+      setConnection('Reconnecting')
+      reconnectTimer = window.setTimeout(() => {
+        connect(id)
+        // Check for an expired HTTP token if the handshake was rejected.
+        void synchronize()
+      }, reconnectDelay)
+      reconnectDelay = Math.min(reconnectDelay * 2, 8000)
     }
 
     function connect(id: number) {
-      const connectionSocket = subscribeToCanvas(id, token)
+      if (signal.aborted) return
+      let connectionSocket: WebSocket
+      try {
+        connectionSocket = subscribeToCanvas(id, token)
+      } catch {
+        reconnect(id)
+        return
+      }
       socket = connectionSocket
       connectionSocket.onopen = () => {
         if (signal.aborted) return
         connected = true
-        retryDelay = 500
-        // The group has been joined. Buffer anything that arrives during the snapshot.
+        reconnectDelay = 500
+        // The group has been joined. Buffer events that arrive during the snapshot.
         void synchronize()
       }
       connectionSocket.onmessage = event => {
         if (signal.aborted) return
         try {
-          receive(decodeCanvasEvent(event.data))
+          const update = decodeCanvasEvent(event.data)
+          if (update.type === 'placement') receive(update.placement)
+          else {
+            latestKnownVersion = Math.max(latestKnownVersion, update.version)
+            checkVersion()
+          }
         } catch {
-          void synchronize()
+          scheduleSync()
         }
       }
       connectionSocket.onclose = () => {
-        if (signal.aborted) return
-        connected = false
-        setConnection('Reconnecting')
-        reconnectTimer = window.setTimeout(() => {
-          connect(id)
-          // This also checks for an expired HTTP token if the handshake was rejected.
-          void synchronize()
-        }, retryDelay)
-        retryDelay = Math.min(retryDelay * 2, 8000)
+        if (!signal.aborted) reconnect(id)
       }
     }
 
@@ -156,9 +225,5 @@ export function useLiveCanvas(token: string, onExpired: () => void) {
     }
   }, [token, onExpired])
 
-  return {
-    board, connection, error, loading,
-    refresh: () => refreshRef.current(),
-    receive: (placement: Placement) => receiveRef.current(placement),
-  }
+  return { board, connection, error, loading, refresh, receive: acceptPlacement }
 }

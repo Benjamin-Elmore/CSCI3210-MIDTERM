@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: pixel-commons-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: python manage.py migrate --noinput && python manage.py init_canvas && python -m daphne -b 0.0.0.0 -p $PORT config.asgi:application
+    rootDir: backend
+    healthCheckPath: /api/health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://benjamin-elmore.github.io
+      - key: DATABASE_URL
+        fromDatabase:
+          name: pixel-commons-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: pixel-commons-redis
+          property: connectionString
+  - type: keyvalue
+    name: pixel-commons-redis
+    plan: free
+    region: oregon
+    ipAllowList: []
+    maxmemoryPolicy: noeviction
+
+databases:
+  - name: pixel-commons-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "17"
+    ipAllowList: []

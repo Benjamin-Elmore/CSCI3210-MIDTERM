@@ -6,6 +6,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .events import broadcast_revocation
 from .serializers import LoginSerializer, RegistrationSerializer, UserSerializer
 
 
@@ -47,7 +48,9 @@ class LoginView(APIView):
 class LogoutView(APIView):
     def post(self, request):
         # Deleting the token revokes it for every client using this account's token.
+        token = request.auth.key
         request.auth.delete()
+        transaction.on_commit(lambda: broadcast_revocation(token), robust=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

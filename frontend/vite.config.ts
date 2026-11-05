@@ -3,6 +3,7 @@ import { defineConfig } from 'vite'
 
 // Development-only proxy: browsers use one origin for the UI and API.
 export default defineConfig({
+  base: process.env.VITE_BASE_PATH || '/',
   plugins: [react()],
   server: {
     host: '127.0.0.1',

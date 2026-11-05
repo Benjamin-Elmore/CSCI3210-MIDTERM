@@ -1,23 +1,17 @@
 import { useEffect, useRef } from 'react'
 import type { KeyboardEvent, PointerEvent, RefObject } from 'react'
-import type { Placement, Snapshot } from '../api/canvas'
-
-export interface Coordinate { x: number; y: number }
-export interface CanvasView extends Coordinate { zoom: number }
-
-export const overview: CanvasView = { x: 0.5, y: 0.5, zoom: 1 }
-export const maxZoom = 16
+import type { Pixel, Placement, SnapshotMetadata } from '../api/canvas'
+import { maxZoom, zoomView } from './canvasView'
+import type { CanvasView, Coordinate } from './canvasView'
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
 }
 
-export function zoomView(view: CanvasView, zoom: number): CanvasView {
-  return zoom === 1 ? overview : { ...view, zoom }
-}
-
-export function PixelCanvas({ snapshot, history, selected, color, view, canvasRef, onView, onSelect }: {
-  snapshot: Snapshot
+export function PixelCanvas({ snapshot, version, pixels, history, selected, color, view, canvasRef, onView, onSelect }: {
+  snapshot: SnapshotMetadata
+  version: number
+  pixels: ReadonlyArray<ReadonlyMap<number, Pixel>>
   history: Placement[]
   selected: Coordinate
   color: string
@@ -27,27 +21,31 @@ export function PixelCanvas({ snapshot, history, selected, color, view, canvasRe
   onSelect: (coordinate: Coordinate) => void
 }) {
   const frame = useRef<HTMLDivElement>(null)
-  const drawn = useRef<Snapshot | null>(null)
+  const drawn = useRef<{ snapshot: SnapshotMetadata; version: number } | null>(null)
   const drag = useRef<{ id: number; x: number; y: number; view: CanvasView; moved: boolean } | null>(null)
 
   useEffect(() => {
     const context = canvasRef.current?.getContext('2d')
     if (!context) return
     const previous = drawn.current
-    const updates = previous && previous.id === snapshot.id && previous.server_time === snapshot.server_time
-      ? history.filter(item => item.version > previous.version && item.version <= snapshot.version).reverse()
+    const updates = previous?.snapshot === snapshot
+      ? history.filter(item => item.version > previous.version && item.version <= version).reverse()
       : null
-    const incremental = previous && updates && updates.length === snapshot.version - previous.version
-    if (!incremental) {
-      context.fillStyle = snapshot.background_color
-      context.fillRect(0, 0, snapshot.width, snapshot.height)
-    }
-    for (const pixel of incremental ? updates : snapshot.pixels) {
+    const paint = (pixel: Pixel) => {
       context.fillStyle = pixel.color
       context.fillRect(pixel.x, pixel.y, 1, 1)
     }
-    drawn.current = snapshot
-  }, [canvasRef, history, snapshot])
+    if (previous && updates && updates.length === version - previous.version) {
+      for (const pixel of updates) paint(pixel)
+    } else {
+      context.fillStyle = snapshot.background_color
+      context.fillRect(0, 0, snapshot.width, snapshot.height)
+      for (const row of pixels) {
+        for (const pixel of row.values()) paint(pixel)
+      }
+    }
+    drawn.current = { snapshot, version }
+  }, [canvasRef, history, pixels, snapshot, version])
 
   function startDrag(event: PointerEvent<HTMLCanvasElement>) {
     if (event.button !== 0 || drag.current) return

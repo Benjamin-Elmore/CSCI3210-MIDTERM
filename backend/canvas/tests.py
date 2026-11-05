@@ -1,18 +1,25 @@
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from threading import Barrier
 from unittest.mock import patch
 from uuid import uuid4
 
+from channels.db import database_sync_to_async
+from channels.layers import get_channel_layer
+from channels.testing import WebsocketCommunicator
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, close_old_connections, connection, transaction
-from django.test import TransactionTestCase
+from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient
 
+from config.asgi import application
+
+from .events import CANVAS_PROTOCOL, canvas_group
 from .models import Canvas, Pixel, Placement, UserCanvasState
 from .services import place_pixel
 
@@ -62,7 +69,9 @@ class CanvasRulesTests(TransactionTestCase):
         ])
         url = f"/api/canvases/{self.canvas.pk}/history/"
         recent = self.client.get(url)
-        self.assertEqual([row["version"] for row in recent.data["results"]], list(range(101, 51, -1)))
+        self.assertEqual(
+            [row["version"] for row in recent.data["results"]], list(range(101, 51, -1))
+        )
         mine = self.client.get(url, {"mine": 1})
         self.assertEqual(mine.status_code, 200)
         self.assertEqual(mine.data["count"], 51)
@@ -236,3 +245,103 @@ class CanvasRulesTests(TransactionTestCase):
         latest = Placement.objects.order_by("-version").first()
         self.assertEqual(latest.version, 2)
         self.assertEqual(Pixel.objects.get().color, latest.color)
+
+
+@override_settings(
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+    ALLOWED_HOSTS=["localhost", "testserver"],
+)
+class CanvasSocketTests(TransactionTestCase):
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="artist")
+        self.token = Token.objects.create(user=user)
+        other = get_user_model().objects.create_user(username="other")
+        self.other_token = Token.objects.create(user=other)
+        self.canvas = Canvas.objects.create(name="Test", slug="test")
+
+    @asynccontextmanager
+    async def connect(self, token):
+        socket = WebsocketCommunicator(
+            application,
+            f"/ws/canvases/{self.canvas.pk}/",
+            headers=[(b"origin", b"http://localhost")],
+            subprotocols=[CANVAS_PROTOCOL, f"token.{token}"],
+        )
+        try:
+            yield socket, await socket.connect()
+        finally:
+            await socket.disconnect()
+
+    @database_sync_to_async
+    def logout(self):
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Token {self.token.key}")
+        return client.post("/api/auth/logout/")
+
+    async def test_invalid_token_is_rejected(self):
+        async with self.connect("invalid") as (_, result):
+            self.assertEqual(result, (False, 4403))
+
+    async def test_logout_disconnects_open_sockets_for_the_same_token(self):
+        async with (
+            self.connect(self.token.key) as (first, first_result),
+            self.connect(self.token.key) as (second, second_result),
+            self.connect(self.other_token.key) as (other, other_result),
+        ):
+            for result in (first_result, second_result, other_result):
+                self.assertEqual(result, (True, CANVAS_PROTOCOL))
+            self.assertEqual((await self.logout()).status_code, 204)
+            for socket in (first, second):
+                self.assertEqual(
+                    await socket.receive_output(), {"type": "websocket.close", "code": 4403}
+                )
+            await get_channel_layer().group_send(
+                canvas_group(self.canvas.pk),
+                {"type": "canvas.placement", "placement": {"version": 1}},
+            )
+            self.assertEqual(
+                await other.receive_json_from(), {"type": "placement", "placement": {"version": 1}}
+            )
+
+    async def test_revoked_token_cannot_receive_a_placement_without_logout_event(self):
+        async with self.connect(self.token.key) as (socket, result):
+            self.assertEqual(result, (True, CANVAS_PROTOCOL))
+            await database_sync_to_async(self.token.delete)()
+            await get_channel_layer().group_send(
+                canvas_group(self.canvas.pk),
+                {"type": "canvas.placement", "placement": {"version": 1}},
+            )
+            self.assertEqual(
+                await socket.receive_output(), {"type": "websocket.close", "code": 4403}
+            )
+
+    @patch("canvas.consumers.SYNC_INTERVAL_SECONDS", 0.01)
+    async def test_heartbeat_disconnects_an_idle_socket_with_a_revoked_token(self):
+        async with self.connect(self.token.key) as (socket, result):
+            self.assertEqual(result, (True, CANVAS_PROTOCOL))
+            await database_sync_to_async(self.token.delete)()
+            for _ in range(10):
+                event = await socket.receive_output()
+                if event["type"] == "websocket.close":
+                    break
+            self.assertEqual(event, {"type": "websocket.close", "code": 4403})
+
+    @patch("canvas.consumers.SYNC_INTERVAL_SECONDS", 0.01)
+    async def test_heartbeat_reports_committed_version_when_broadcast_is_lost(self):
+        async with self.connect(self.token.key) as (socket, result):
+            self.assertEqual(result, (True, CANVAS_PROTOCOL))
+            self.assertEqual(await socket.receive_json_from(), {"type": "version", "version": 0})
+            with patch("canvas.services.broadcast_placement"):
+                await database_sync_to_async(place_pixel)(
+                    user=self.token.user,
+                    canvas_id=self.canvas.pk,
+                    x=0,
+                    y=0,
+                    color="#FF0000",
+                    request_id=uuid4(),
+                )
+            for _ in range(10):
+                heartbeat = await socket.receive_json_from()
+                if heartbeat["version"] == 1:
+                    break
+            self.assertEqual(heartbeat, {"type": "version", "version": 1})

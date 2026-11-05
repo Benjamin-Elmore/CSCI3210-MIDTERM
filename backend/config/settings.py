@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 
+import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
@@ -38,12 +39,30 @@ ALLOWED_HOSTS = [
     for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
     if h.strip()
 ]
+render_hostname = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if render_hostname:
+    ALLOWED_HOSTS.append(render_hostname)
+
+CORS_ALLOWED_ORIGINS = [
+    origin.strip() for origin in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+CORS_URLS_REGEX = r"^/api/.*$"
+CORS_EXPOSE_HEADERS = ["retry-after"]
+CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS
+if render_hostname:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 
 # Application definition
 
 INSTALLED_APPS = [
     "daphne",
+    "corsheaders",
     "rest_framework",
     "rest_framework.authtoken",
     "channels",
@@ -59,7 +78,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -102,6 +123,9 @@ DATABASES = {
         "OPTIONS": {"connect_timeout": 3},
     }
 }
+if os.environ.get("DATABASE_URL"):
+    DATABASES["default"] = dj_database_url.config(conn_max_age=60, conn_health_checks=True)
+    DATABASES["default"].setdefault("OPTIONS", {})["connect_timeout"] = 3
 ASGI_APPLICATION = "config.asgi.application"
 # Redis distributes Channels events between server processes; it is not the durable database.
 REDIS_URL = os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0")

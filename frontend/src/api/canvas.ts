@@ -12,12 +12,12 @@ export interface CanvasInfo {
 }
 
 export interface Pixel { x: number; y: number; color: string }
-export interface Snapshot extends CanvasInfo {
-  pixels: Pixel[]
+export interface SnapshotMetadata extends CanvasInfo {
   background_color: string
   next_allowed_at: string | null
   server_time: string
 }
+export interface Snapshot extends SnapshotMetadata { pixels: Pixel[] }
 export interface Placement extends Pixel {
   id: number
   request_id: string

@@ -1,19 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { getMyHistory, placePixel } from '../api/canvas'
-import type { PlacementInput, Snapshot } from '../api/canvas'
+import { placePixel } from '../api/canvas'
+import type { CanvasInfo, PlacementInput, SnapshotMetadata } from '../api/canvas'
 import { useLiveCanvas } from '../hooks/useLiveCanvas'
 import { ApiError, message } from '../api/client'
-import { maxZoom, overview, PixelCanvas, zoomView } from './PixelCanvas'
-import type { Coordinate } from './PixelCanvas'
+import { maxZoom, overview, zoomView } from './canvasView'
+import type { Coordinate } from './canvasView'
+import { PixelCanvas } from './PixelCanvas'
+import { PlacementHistory } from './PlacementHistory'
+import { PlacePixelButton } from './PlacePixelButton'
 
-function coordinateFrom(x: string, y: string, snapshot: Snapshot): Coordinate | null {
+function coordinateFrom(x: string, y: string, snapshot: CanvasInfo): Coordinate | null {
   if (!/^\d+$/.test(x) || !/^\d+$/.test(y)) return null
   const coordinate = { x: Number(x), y: Number(y) }
   return coordinate.x < snapshot.width && coordinate.y < snapshot.height ? coordinate : null
 }
 
-function centeredView(coordinate: Coordinate, snapshot: Snapshot, zoom: number) {
+function centeredView(coordinate: Coordinate, snapshot: CanvasInfo, zoom: number) {
   return {
     x: (coordinate.x + 0.5) / snapshot.width,
     y: (coordinate.y + 0.5) / snapshot.height,
@@ -24,67 +27,28 @@ function centeredView(coordinate: Coordinate, snapshot: Snapshot, zoom: number) 
 export function Board({ token, onExpired }: { token: string; onExpired: () => void }) {
   const { board, connection, error: syncError, loading, refresh, receive } = useLiveCanvas(token, onExpired)
   const snapshot = board?.snapshot
-  const history = board?.history ?? []
   const [selected, setSelected] = useState<Coordinate>({ x: 0, y: 0 })
   const [view, setView] = useState(overview)
   const [linkOpened, setLinkOpened] = useState(false)
   const [shareFallback, setShareFallback] = useState('')
   const [jumpError, setJumpError] = useState('')
   const [eyedropper, setEyedropper] = useState(false)
-  const [color, setColor] = useState('')
+  const [selectedColor, setColor] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [placing, setPlacing] = useState(false)
-  const [readyAt, setReadyAt] = useState(0)
-  const [now, setNow] = useState(() => Date.now())
-  const [mine, setMine] = useState(false)
-  const [historyPage, setHistoryPage] = useState(1)
-  const [historyResult, setHistoryResult] = useState<Awaited<ReturnType<typeof getMyHistory>> | null>(null)
-  const [historyError, setHistoryError] = useState('')
+  const [localCooldown, setLocalCooldown] = useState<{ snapshot: SnapshotMetadata; version: number; readyAt: number } | null>(null)
   const [localVersion, setLocalVersion] = useState(0)
   const [pending, setPending] = useState<PlacementInput | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const placingRef = useRef(false)
-  const latestLocalVersion = useRef(0)
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 250)
-    return () => window.clearInterval(timer)
-  }, [])
-
   const palette = snapshot?.palette
-  const backgroundColor = snapshot?.background_color
-  useEffect(() => {
-    if (!palette) return
-    setColor(current => palette.includes(current) ? current :
-      palette.find(item => item !== backgroundColor) ?? palette[0] ?? '#000000')
-  }, [backgroundColor, palette])
-
-  const snapshotVersion = board?.snapshotVersion ?? 0
-  const canvasId = snapshot?.id
-  useEffect(() => {
-    if (!mine || canvasId === undefined) return
-    const controller = new AbortController()
-    void getMyHistory(canvasId, historyPage, token, controller.signal).then(result => {
-      if (controller.signal.aborted) return
-      setHistoryResult(result)
-      setHistoryError('')
-    }).catch(error => {
-      if (controller.signal.aborted) return
-      if (error instanceof ApiError && error.status === 401) onExpired()
-      else setHistoryError(message(error))
-    })
-    return () => controller.abort()
-  }, [canvasId, historyPage, localVersion, mine, onExpired, snapshotVersion, token])
-
-  const nextAllowedAt = snapshot?.next_allowed_at
-  const serverTime = snapshot?.server_time
-  useEffect(() => {
-    if (!serverTime || snapshotVersion < latestLocalVersion.current) return
-    const remaining = nextAllowedAt ? Math.max(0, Date.parse(nextAllowedAt) - Date.parse(serverTime)) : 0
-    setReadyAt(Date.now() + remaining)
-    setNow(Date.now())
-  }, [nextAllowedAt, serverTime, snapshotVersion])
+  const color = palette?.includes(selectedColor) ? selectedColor :
+    palette?.find(item => item !== snapshot?.background_color) ?? palette?.[0] ?? ''
+  // A snapshot must include the accepted placement before its cooldown can replace ours.
+  const useLocalCooldown = localCooldown && snapshot &&
+    (snapshot === localCooldown.snapshot || snapshot.version < localCooldown.version)
+  const readyAt = useLocalCooldown ? localCooldown.readyAt : board?.readyAt ?? 0
 
   if (snapshot && !linkOpened) {
     setLinkOpened(true)
@@ -128,12 +92,6 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
     }, 'image/png')
   }
 
-  function changeHistoryPage(page: number) {
-    setHistoryPage(page)
-    setHistoryResult(null)
-    setHistoryError('')
-  }
-
   function jump(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!snapshot) return
@@ -151,11 +109,11 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
 
   function select(coordinate: Coordinate) {
     setSelected(coordinate)
-    if (!eyedropper || !snapshot) return
-    const pixel = snapshot.pixels.find(item => item.x === coordinate.x && item.y === coordinate.y)
-    const sampled = pixel?.color ?? snapshot.background_color
+    if (!eyedropper || !board) return
+    const pixel = board.pixels[coordinate.y]?.get(coordinate.x)
+    const sampled = pixel?.color ?? board.snapshot.background_color
     setEyedropper(false)
-    if (snapshot.palette.includes(sampled)) {
+    if (board.snapshot.palette.includes(sampled)) {
       setColor(sampled)
       setNotice('Picked ' + sampled + '.')
     } else {
@@ -164,32 +122,31 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
   }
 
   async function place() {
-    if (!snapshot || placingRef.current) return
+    if (!board || placingRef.current || (!pending && readyAt > Date.now())) return
+    const { snapshot } = board
     placingRef.current = true
     setPlacing(true)
     setError('')
     setNotice('')
-    // Keep the original ID and payload after an uncertain result to avoid duplicate writes.
-    const input = pending ?? { ...selected, color, request_id: crypto.randomUUID() }
-    setPending(input)
     try {
+      // Keep the original ID and payload after an uncertain result to avoid duplicate writes.
+      const input = pending ?? { ...selected, color, request_id: crypto.randomUUID() }
+      setPending(input)
       const accepted = await placePixel(snapshot.id, token, input)
       setPending(null)
-      latestLocalVersion.current = accepted.version
       setLocalVersion(accepted.version)
       receive(accepted)
-      setReadyAt(Date.now() + snapshot.cooldown_seconds * 1000)
-      setNow(Date.now())
+      setLocalCooldown({ snapshot, version: accepted.version, readyAt: Date.now() + snapshot.cooldown_seconds * 1000 })
       setNotice(`Pixel saved at (${accepted.x}, ${accepted.y}).`)
       // A retry may return an earlier placement with an already expired cooldown.
       if (pending) refresh()
     } catch (error) {
       if (error instanceof ApiError) {
         if (error.status === 401) { onExpired(); return }
-        if (error.status < 500) setPending(null)
+        if (error.status < 500 && error.status !== 408) setPending(null)
         if (error.status === 429) {
-          setReadyAt(Date.now() + error.retryAfter * 1000)
-          setNow(Date.now())
+          setLocalCooldown({ snapshot, version: board.version, readyAt: Date.now() + error.retryAfter * 1000 })
+          refresh()
         }
       }
       setError(message(error))
@@ -198,9 +155,6 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
       setPlacing(false)
     }
   }
-
-  const visibleHistory = mine ? historyResult?.items ?? [] : history
-  const remaining = Math.max(0, Math.ceil((readyAt - now) / 1000))
 
   return (
     <section aria-label="Shared canvas">
@@ -212,9 +166,9 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
       </div>
       {(error || syncError) && <p className="error" role="alert">{error || syncError}</p>}
       <p className="notice" role="status" aria-live="polite">{notice || (loading ? 'Loading canvas and history…' : '')}</p>
-      {snapshot && <div className="workspace">
+      {board && snapshot && <div className="workspace">
         <div className="card canvas-card">
-          <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span role="status">{connection} · Version {snapshot.version}</span></div>
+          <div className="canvas-meta"><span>{snapshot.width} × {snapshot.height} pixels</span><span role="status">{connection} · Version {board.version}</span></div>
           <div className="canvas-controls" role="group" aria-label="Canvas zoom">
             <button disabled={view.zoom === 1} onClick={() => setView(zoomView(view, view.zoom / 2))}>Zoom out</button>
             <button disabled={view.zoom === maxZoom} onClick={() => setView(zoomView(view, view.zoom * 2))}>Zoom in</button>
@@ -232,8 +186,8 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
             <button type="submit">Jump to pixel</button>
           </form>
           {jumpError && <p className="error" role="alert">{jumpError}</p>}
-          <PixelCanvas snapshot={snapshot} history={history} selected={selected} color={color}
-            view={view} canvasRef={canvasRef} onView={setView} onSelect={select} />
+          <PixelCanvas snapshot={snapshot} version={board.version} pixels={board.pixels} history={board.history}
+            selected={selected} color={color} view={view} canvasRef={canvasRef} onView={setView} onSelect={select} />
           <p className="muted">Click, tap, or use the arrow keys to select a pixel. Scroll or use the buttons to zoom, then drag to pan.</p>
         </div>
         <aside className="tools">
@@ -252,33 +206,12 @@ export function Board({ token, onExpired }: { token: string; onExpired: () => vo
               <span><strong>{color}</strong><br /><span className="muted">Pixel ({selected.x}, {selected.y})</span></span>
             </div>
             {pending && !placing && <p className="muted">The last request could not be confirmed. Retry to check the original pixel ({pending.x}, {pending.y}).</p>}
-            <button className="primary" disabled={placing || loading || (!pending && remaining > 0)} onClick={() => { void place() }}>
-              {placing ? 'Saving pixel…' : pending ? 'Retry last placement' : remaining > 0 ? `Ready in ${remaining}s` : 'Place pixel'}
-            </button>
+            <PlacePixelButton readyAt={readyAt} placing={placing} retrying={Boolean(pending)} loading={loading}
+              onPlace={() => { void place() }} />
             <p className="muted">One pixel every {snapshot.cooldown_seconds} seconds. Each accepted placement is saved.</p>
           </section>
-          <section className="card history" aria-labelledby="history-title">
-            <h2 id="history-title">{mine ? 'My placements' : 'Recent placements'}</h2>
-            <div className="canvas-controls" role="group" aria-label="Placement history filter">
-              <button aria-pressed={!mine} onClick={() => setMine(false)}>All placements</button>
-              <button aria-pressed={mine} onClick={() => { if (!mine) { changeHistoryPage(1); setMine(true) } }}>
-                My placements
-              </button>
-            </div>
-            {mine && historyError ? <p role="alert">{historyError}</p> :
-              mine && !historyResult ? <p className="muted" role="status">Loading placements…</p> :
-              visibleHistory.length === 0 ? <p className="muted">{mine ? 'You have no placements yet.' : 'A blank canvas. Make the first mark.'}</p> : <ol>
-              {visibleHistory.map(item => <li key={item.id}>
-                <span className="history-color" style={{ backgroundColor: item.color }} aria-label={item.color} />
-                <span>({item.x}, {item.y})<small>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></span>
-                <span className="muted">#{item.version}</span>
-              </li>)}
-            </ol>}
-            {mine && (historyPage > 1 || historyResult?.hasNext) && <div className="history-pages">
-              <button disabled={historyPage === 1} onClick={() => changeHistoryPage(historyPage - 1)}>Newer</button>
-              <button disabled={!historyResult?.hasNext} onClick={() => changeHistoryPage(historyPage + 1)}>Older</button>
-            </div>}
-          </section>
+          <PlacementHistory canvasId={snapshot.id} token={token} recent={board.history} localVersion={localVersion}
+            snapshotVersion={snapshot.version} onExpired={onExpired} />
         </aside>
       </div>}
     </section>

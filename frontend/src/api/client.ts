@@ -28,24 +28,32 @@ export async function request<T>(
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (options.token) headers.Authorization = `Token ${options.token}`
   if (options.data !== undefined) headers['Content-Type'] = 'application/json'
+  const timeout = AbortSignal.timeout(15000)
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
   let response: Response
+  let body: unknown
   try {
-    response = await fetch(`/api/${path}`, {
+    response = await fetch(new URL(`/api/${path}`, import.meta.env.VITE_BACKEND_ORIGIN || window.location.origin), {
       method: options.method,
       headers,
       body: options.data === undefined ? undefined : JSON.stringify(options.data),
-      signal: options.signal,
+      signal,
+    })
+    body = response.status === 204 ? null : await response.json().catch(error => {
+      if (signal.aborted) throw error
+      return null
     })
   } catch (error) {
     if (options.signal?.aborted) throw error
+    if (timeout.aborted) throw new Error('The server took too long to respond. Please try again.')
     throw new Error('Could not reach the server. Check your connection and try again.')
   }
-  const body: unknown = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok) {
+    const retryAfter = Number(response.headers.get('Retry-After'))
     throw new ApiError(
       describeError(body) || `The server returned HTTP ${response.status}. Please try again.`,
       response.status,
-      Number(response.headers.get('Retry-After')) || 0,
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 0,
     )
   }
   return decode(body)
@@ -53,7 +61,7 @@ export async function request<T>(
 
 export function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('Unexpected API response. Try refreshing the canvas.')
+    throw new Error('Unexpected server response. Please try again.')
   }
   return value as Record<string, unknown>
 }

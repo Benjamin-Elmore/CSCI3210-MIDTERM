@@ -22,11 +22,15 @@ export default function App() {
     setError('Your session has expired. Please log in again.')
   }, [])
 
+  const activeToken = session?.token
   useEffect(() => {
-    if (!token) return
+    if (!token || token === activeToken) return
     const controller = new AbortController()
     void currentUser(token, controller.signal).then(user => {
-      if (!controller.signal.aborted) setSession({ user, token })
+      if (!controller.signal.aborted) {
+        setSession({ user, token })
+        setChecking(false)
+      }
     }).catch(error => {
       if (controller.signal.aborted) return
       if (error instanceof ApiError && error.status === 401) expired()
@@ -35,10 +39,10 @@ export default function App() {
       if (!controller.signal.aborted) setChecking(false)
     })
     return () => controller.abort()
-  }, [token, retry, expired])
+  }, [activeToken, token, retry, expired])
 
   function signedIn(value: Session) {
-    setChecking(true)
+    setChecking(false)
     saveToken(value.token)
     setError('')
     setSession(value)
@@ -66,7 +70,7 @@ export default function App() {
   return (
     <main className="shell">
       <header className="site-header">
-        <a className="brand" href="/" aria-label="Pixel Commons home"><span className="brand-mark" aria-hidden="true">▦</span> Pixel Commons</a>
+        <a className="brand" href={import.meta.env.BASE_URL} aria-label="Pixel Commons home"><span className="brand-mark" aria-hidden="true">▦</span> Pixel Commons</a>
         {session && <div className="account-menu"><span>{session.user.username}</span><button disabled={loggingOut} onClick={() => { void signOut() }}>{loggingOut ? 'Logging out…' : 'Log out'}</button></div>}
       </header>
       {error && <p className="error" role="alert">{error}</p>}
